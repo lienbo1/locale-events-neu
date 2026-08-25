@@ -7,12 +7,59 @@ const cache = new Map();
 
 app.use(express.static(__dirname));
 
+const DAY = 86400000;
+
+const CALENDARS = [
+  {
+    id:"marl", city:"Marl", lat:51.6563, lon:7.0906,
+    source:"Stadt Marl – Veranstaltungskalender",
+    url:"https://marl.de/rathaus-service/aktuelles/veranstaltungskalender/marl/kalender",
+    parser:"generic"
+  },
+  {
+    id:"recklinghausen", city:"Recklinghausen", lat:51.6138, lon:7.1974,
+    source:"Stadt Recklinghausen – Veranstaltungskalender",
+    url:"https://www.recklinghausen.de/Inhalte/Startseite/_Veranstaltungskalender/index.asp?db=79&fieldStadt=Recklinghausen&form=list&orderby=fieldgkdveranstbeginn",
+    parser:"recklinghausen"
+  },
+  {
+    id:"herten", city:"Herten", lat:51.5964, lon:7.1439,
+    source:"Stadt Herten – Veranstaltungskalender",
+    url:"https://www.herten.de/stadtleben/veranstaltungskalender",
+    parser:"generic"
+  },
+  {
+    id:"dorsten", city:"Dorsten", lat:51.6617, lon:6.9651,
+    source:"StadtAgentur Dorsten – Veranstaltungskalender",
+    url:"https://stadtagentur-dorsten.de/events/",
+    parser:"generic"
+  },
+  {
+    id:"haltern", city:"Haltern am See", lat:51.7433, lon:7.1817,
+    source:"Stadt Haltern am See – Veranstaltungshighlights",
+    url:"https://www.haltern-am-see.de/veranstaltungsuebersicht",
+    parser:"generic"
+  },
+  {
+    id:"haltern-local", city:"Haltern am See", lat:51.7433, lon:7.1817,
+    source:"Haltern Online – Veranstaltungskalender",
+    url:"https://haltern-online.de/events/",
+    parser:"generic"
+  },
+  {
+    id:"gelsenkirchen", city:"Gelsenkirchen", lat:51.5177, lon:7.0857,
+    source:"Visit Gelsenkirchen – Events",
+    url:"https://visit.gelsenkirchen.de/de/Events/index.aspx",
+    parser:"generic"
+  }
+];
+
 const EVENT_TERMS = [
-  "Flohmarkt", "Trödelmarkt", "Stadtfest", "Kirmes", "Schützenfest",
-  "Wochenmarkt", "Markt", "Familienfest", "Kinderfest", "Vereinsfest",
-  "Feuerwehrfest", "Sommerfest", "Straßenfest", "Bürgerfest",
-  "Weihnachtsmarkt", "Ostermarkt", "Kunstmarkt", "Oldtimertreffen",
-  "Dorffest", "Weinfest", "verkaufsoffener Sonntag", "Veranstaltung"
+  "Flohmarkt","Trödelmarkt","Stadtfest","Kirmes","Schützenfest","Wochenmarkt",
+  "Markt","Familienfest","Kinderfest","Vereinsfest","Feuerwehrfest","Sommerfest",
+  "Straßenfest","Bürgerfest","Weihnachtsmarkt","Ostermarkt","Kunstmarkt",
+  "Oldtimertreffen","Dorffest","Weinfest","verkaufsoffener Sonntag",
+  "Konzert","Theater","Ausstellung","Festival","Führung","Lesung","Sport"
 ];
 
 const QUERY_GROUPS = [
@@ -20,398 +67,289 @@ const QUERY_GROUPS = [
   "Stadtfest OR Straßenfest OR Bürgerfest OR Dorffest",
   "Kirmes OR Schützenfest OR Vereinsfest OR Feuerwehrfest",
   "Familienfest OR Kinderfest OR Sommerfest",
-  "Weihnachtsmarkt OR Ostermarkt OR Kunstmarkt OR Weinfest",
+  "Konzert OR Theater OR Ausstellung OR Festival",
   "\"verkaufsoffener Sonntag\" OR Veranstaltung OR Veranstaltungen"
 ];
 
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+const MONTHS = {
+  januar:1,februar:2,märz:3,maerz:3,april:4,mai:5,juni:6,juli:7,
+  august:8,september:9,oktober:10,november:11,dezember:12,
+  jan:1,feb:2,mär:3,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,sept:9,okt:10,nov:11,dez:12
+};
 
-function stripHtml(s=""){
-  return s.replace(/<[^>]*>/g," ").replace(/&amp;/g,"&").replace(/&quot;/g,'"')
-    .replace(/&#39;/g,"'").replace(/&lt;/g,"<").replace(/&gt;/g,">")
-    .replace(/\s+/g," ").trim();
+function localISO(d){
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
 }
-
-function decodeXml(s=""){
-  return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,"$1")
-    .replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;/g,"'")
-    .replace(/&lt;/g,"<").replace(/&gt;/g,">");
+function parseDMY(d,m,y){
+  y=+y; if(y<100) y+=2000;
+  return `${y}-${String(+m).padStart(2,"0")}-${String(+d).padStart(2,"0")}`;
 }
-
-function getTag(block, tag){
-  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "i");
-  const m = block.match(re);
-  return m ? decodeXml(m[1]).trim() : "";
+function decodeHtml(s=""){
+  return s.replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&").replace(/&quot;/gi,'"')
+    .replace(/&#39;|&apos;/gi,"'").replace(/&lt;/gi,"<").replace(/&gt;/gi,">")
+    .replace(/&auml;/gi,"ä").replace(/&ouml;/gi,"ö").replace(/&uuml;/gi,"ü")
+    .replace(/&Auml;/g,"Ä").replace(/&Ouml;/g,"Ö").replace(/&Uuml;/g,"Ü")
+    .replace(/&szlig;/gi,"ß").replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(+n));
 }
-
-function parseRss(xml){
-  const blocks = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
-  return blocks.map(b => ({
-    title: stripHtml(getTag(b,"title")),
-    link: stripHtml(getTag(b,"link")),
-    description: stripHtml(getTag(b,"description")),
-    pubDate: stripHtml(getTag(b,"pubDate")),
-    source: stripHtml(getTag(b,"source"))
-  }));
+function stripTags(s=""){
+  return decodeHtml(s.replace(/<script\b[\s\S]*?<\/script>/gi," ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi," ")
+    .replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim());
 }
-
+function htmlToLines(html=""){
+  let s=html.replace(/<script\b[\s\S]*?<\/script>/gi," ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi," ")
+    .replace(/<\/?(?:div|p|li|tr|td|th|h[1-6]|article|section|br|time)[^>]*>/gi,"\n")
+    .replace(/<[^>]+>/g," ");
+  return decodeHtml(s).split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()).filter(Boolean);
+}
 function normalizeTitle(t=""){
-  return t.toLowerCase()
-    .replace(/\s+-\s+[^-]{2,40}$/,"")
-    .replace(/[^\p{L}\p{N}]+/gu," ")
-    .trim();
+  return t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu," ").trim();
 }
-
 function classify(text=""){
   const t=text.toLowerCase();
   if(/flohmarkt|trödel/.test(t)) return "Flohmarkt";
-  if(/weihnachtsmarkt|ostermarkt|kunstmarkt|wochenmarkt|\bmarkt\b/.test(t)) return "Markt";
   if(/kirmes/.test(t)) return "Kirmes";
   if(/schützenfest/.test(t)) return "Schützenfest";
   if(/familienfest|kinderfest/.test(t)) return "Familie";
   if(/vereinsfest|feuerwehrfest/.test(t)) return "Verein";
+  if(/weihnachtsmarkt|ostermarkt|kunstmarkt|wochenmarkt|\bmarkt\b/.test(t)) return "Markt";
   if(/stadtfest|straßenfest|bürgerfest|dorffest|sommerfest|weinfest/.test(t)) return "Stadtfest";
   if(/verkaufsoffener sonntag/.test(t)) return "Shopping";
+  if(/konzert|musik|festival/.test(t)) return "Musik";
+  if(/theater|lesung|ausstellung|museum|führung/.test(t)) return "Kultur";
+  if(/sport|lauf|fitness/.test(t)) return "Sport";
   return "Veranstaltung";
 }
-
-const MONTHS = {
-  januar:1, februar:2, märz:3, maerz:3, april:4, mai:5, juni:6, juli:7,
-  august:8, september:9, oktober:10, november:11, dezember:12
-};
-
-function inferEventDate(text, published){
-  const now = new Date();
-  const pubRaw = published ? new Date(published) : null;
-  const pub = (pubRaw && !isNaN(pubRaw)) ? pubRaw : null;
-  const clean = String(text||"").replace(/\s+/g," ").trim();
-  const lower = clean.toLowerCase();
-
-  function iso(y,m,d){
-    return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-  }
-
-  function dayOnly(d){
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-
-  function chooseYearFromPublication(month, day){
-    // Ohne Veröffentlichungsdatum keine sichere Jahresableitung.
-    if(!pub) return null;
-
-    const baseYear = pub.getFullYear();
-    const pubDay = dayOnly(pub);
-    let candidate = new Date(baseYear, month-1, day);
-
-    // Wenn das genannte Datum bereits deutlich vor der Veröffentlichung lag,
-    // ist wahrscheinlich das Folgejahr gemeint.
-    if(candidate < new Date(pubDay.getTime() - 14*86400000)){
-      candidate = new Date(baseYear+1, month-1, day);
-    }
-
-    // Jahreslose lokale Veranstaltungshinweise müssen zeitlich plausibel
-    // zur Veröffentlichung sein. Mehr als 9 Monate Abstand -> verwerfen.
-    const diffDays = (candidate - pubDay) / 86400000;
-    if(diffDays < -14 || diffDays > 275) return null;
-
-    return candidate.getFullYear();
-  }
-
-  // Vollständiges Datum mit ausdrücklichem Jahr
-  let m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.(20\d{2})\b/);
-  if(m) return iso(+m[3], +m[2], +m[1]);
-
-  // Datumsbereich mit Monatsname und optionalem Jahr:
-  // "29. bis 31. August 2026", "29.-31. August"
-  m = lower.match(/\b([0-3]?\d)\.?\s*(?:-|–|bis)\s*([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
-  if(m){
-    const month=MONTHS[m[3]], day=+m[1];
-    const year=m[4] ? +m[4] : chooseYearFromPublication(month,day);
-    return year ? iso(year,month,day) : null;
-  }
-
-  // Tag + Monatsname
-  m = lower.match(/\b([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
-  if(m){
-    const month=MONTHS[m[2]], day=+m[1];
-    const year=m[3] ? +m[3] : chooseYearFromPublication(month,day);
-    return year ? iso(year,month,day) : null;
-  }
-
-  // Numerisches Datum ohne Jahr: "29.08."
-  m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.\b/);
-  if(m){
-    const day=+m[1], month=+m[2];
-    const year=chooseYearFromPublication(month,day);
-    return year ? iso(year,month,day) : null;
-  }
-
-  // Relative Angaben nur relativ zum Veröffentlichungsdatum interpretieren.
-  // Ohne Veröffentlichungsdatum sind sie zu unsicher.
-  if(!pub) return null;
-
-  const base = dayOnly(pub);
-
-  if(/\bheute\b/.test(lower)){
-    return localISO(base);
-  }
-
-  if(/\bübermorgen\b|\buebermorgen\b/.test(lower)){
-    const d=new Date(base); d.setDate(d.getDate()+2); return localISO(d);
-  }
-
-  if(/\bmorgen\b/.test(lower)){
-    const d=new Date(base); d.setDate(d.getDate()+1); return localISO(d);
-  }
-
-  if(/\b(dieses|kommendes|am)\s+wochenende\b/.test(lower)){
-    const day=base.getDay();
-    const add=(6-day+7)%7;
-    const d=new Date(base); d.setDate(d.getDate()+add);
-    return localISO(d);
-  }
-
-  const weekdays = {
-    sonntag:0, montag:1, dienstag:2, mittwoch:3,
-    donnerstag:4, freitag:5, samstag:6
-  };
-
-  for(const [name,target] of Object.entries(weekdays)){
-    const re = new RegExp(`\\b(?:am|diesen|kommenden|nächsten|naechsten)?\\s*${name}\\b`, "i");
-    if(re.test(lower)){
-      const d=new Date(base);
-      let add=(target-d.getDay()+7)%7;
-      // "am Samstag" in einem Samstagsartikel kann heute bedeuten;
-      // "kommenden/nächsten Samstag" bedeutet dagegen die Folgewoche.
-      if(add===0 && new RegExp(`\\b(?:kommenden|nächsten|naechsten)\\s+${name}\\b`,"i").test(lower)){
-        add=7;
-      }
-      d.setDate(d.getDate()+add);
-      return localISO(d);
-    }
-  }
-
-  return null;
-}
-function localISO(d){
-  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
-}
-
-function periodBounds(mode){
-  const now=new Date();
-  const today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
-  let from=null,to=null;
-
-  if(mode==="today"){
-    from=today; to=today;
-  }else if(mode==="7days"){
-    from=today; to=new Date(today); to.setDate(to.getDate()+6);
-  }else if(mode==="weekend"){
-    const day=today.getDay();
-    const daysToSat=(6-day+7)%7;
-    from=new Date(today); from.setDate(from.getDate()+daysToSat);
-    to=new Date(from); to.setDate(to.getDate()+1);
-  }
-
-  return {from:from?localISO(from):null,to:to?localISO(to):null};
-}
-
 function haversine(a,b){
-  const R=6371, toRad=x=>x*Math.PI/180;
-  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
-  const la1=toRad(a.lat), la2=toRad(b.lat);
-  const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  const R=6371,toRad=x=>x*Math.PI/180;
+  const dLat=toRad(b.lat-a.lat),dLon=toRad(b.lon-a.lon);
+  const h=Math.sin(dLat/2)**2+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLon/2)**2;
   return 2*R*Math.asin(Math.sqrt(h));
 }
-
-async function geocodePostcode(plz){
-  const r = await fetch(`https://api.zippopotam.us/de/${encodeURIComponent(plz)}`);
-  if(!r.ok) throw new Error("Postleitzahl nicht gefunden.");
-  const data = await r.json();
-  const p = data.places && data.places[0];
-  if(!p) throw new Error("Postleitzahl nicht gefunden.");
-  return {name:p["place name"], lat:+p.latitude, lon:+p.longitude};
+async function fetchText(url){
+  const r=await fetch(url,{headers:{
+    "User-Agent":"Mozilla/5.0 (compatible; LokaleEventsApp/2.0; +https://render.com/)",
+    "Accept-Language":"de-DE,de;q=0.9"
+  }});
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return await r.text();
 }
+async function geocodePostcode(plz){
+  const r=await fetch(`https://api.zippopotam.us/de/${encodeURIComponent(plz)}`);
+  if(!r.ok) throw new Error("Postleitzahl nicht gefunden.");
+  const data=await r.json();
+  const p=data.places&&data.places[0];
+  if(!p) throw new Error("Postleitzahl nicht gefunden.");
+  return {name:p["place name"],lat:+p.latitude,lon:+p.longitude};
+}
+function periodBounds(mode){
+  const today=new Date(); today.setHours(0,0,0,0);
+  let from=today,to=null;
+  if(mode==="today") to=today;
+  else if(mode==="7days"){to=new Date(today);to.setDate(to.getDate()+6);}
+  else if(mode==="weekend"){
+    const add=(6-today.getDay()+7)%7;
+    from=new Date(today);from.setDate(from.getDate()+add);
+    to=new Date(from);to.setDate(to.getDate()+1);
+  }
+  return {from:localISO(from),to:to?localISO(to):null};
+}
+function extractDateFromText(text, fallbackYear=new Date().getFullYear()){
+  const s=String(text||"");
+  let m=s.match(/\b([0-3]?\d)\.([01]?\d)\.(20\d{2}|\d{2})\b/);
+  if(m) return parseDMY(m[1],m[2],m[3]);
 
-async function nearbyPlaces(center, radiusKm){
-  const radiusM = Math.min(Math.max(+radiusKm,5),100)*1000;
-  const query = `[out:json][timeout:12];
-    node(around:${radiusM},${center.lat},${center.lon})["place"~"city|town|village|suburb"];
-    out tags center 100;`;
+  m=s.toLowerCase().match(/\b([0-3]?\d)\.?\s*(?:-|–|bis)\s*([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
+  if(m){
+    const mo=MONTHS[m[3]], y=m[4]?+m[4]:fallbackYear;
+    return parseDMY(m[1],mo,y);
+  }
 
-  try{
-    const r = await fetch("https://overpass-api.de/api/interpreter", {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/x-www-form-urlencoded",
-        "User-Agent":"Lokale-Events-App/1.0"
-      },
-      body:"data="+encodeURIComponent(query)
+  m=s.toLowerCase().match(/\b([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
+  if(m){
+    const mo=MONTHS[m[2]], y=m[3]?+m[3]:fallbackYear;
+    return parseDMY(m[1],mo,y);
+  }
+
+  m=s.toLowerCase().match(/\b([0-3]?\d)\s+(jan|feb|mär|mar|apr|mai|jun|jul|aug|sep|sept|okt|nov|dez)\.?\b/);
+  if(m){
+    let y=fallbackYear;
+    const mo=MONTHS[m[2]];
+    const d=new Date(y,mo-1,+m[1]);
+    const today=new Date();today.setHours(0,0,0,0);
+    if(d<new Date(today.getTime()-30*DAY)) y++;
+    return parseDMY(m[1],mo,y);
+  }
+  return null;
+}
+function isNoise(line=""){
+  const t=line.toLowerCase();
+  return !line || line.length<3 || line.length>180 ||
+    /^(start|ende|weitere termine|veranstaltungen finden|veranstaltung vorschlagen|mehr|details|zurück|termin speichern)$/i.test(line) ||
+    /^\d{1,2}:\d{2}/.test(line) || /^\d{1,2}\.?$/.test(line) ||
+    /^(jan|feb|mär|mar|apr|mai|jun|jul|aug|sep|okt|nov|dez)$/i.test(line);
+}
+function titleCandidate(lines,i){
+  // same line after a date may already contain useful title
+  const same=lines[i].replace(/\b\d{1,2}[.\s-]+(?:\d{1,2}[.\s-]+)?(?:20)?\d{2,4}\b/g,"")
+    .replace(/\b\d{1,2}\s+(?:jan|feb|mär|mar|apr|mai|jun|jul|aug|sep|sept|okt|nov|dez)\.?\b/gi,"")
+    .replace(/\b\d{1,2}:\d{2}\b/g,"").replace(/^[\s|•–-]+/,"").trim();
+  if(!isNoise(same) && same.length>=5) return same;
+
+  for(const offset of [-1,1,-2,2,-3,3]){
+    const x=lines[i+offset];
+    if(x && !isNoise(x) && !extractDateFromText(x)) return x;
+  }
+  return null;
+}
+function parseGenericCalendar(html,src){
+  const lines=htmlToLines(html);
+  const out=[];
+  const year=new Date().getFullYear();
+
+  for(let i=0;i<lines.length;i++){
+    const date=extractDateFromText(lines[i],year);
+    if(!date) continue;
+    const title=titleCandidate(lines,i);
+    if(!title) continue;
+
+    out.push({
+      title,
+      eventDate:date,
+      matchedPlace:src.city,
+      source:src.source,
+      url:src.url,
+      category:classify(title+" "+lines.slice(Math.max(0,i-2),i+3).join(" ")),
+      sourceType:"Kalender"
     });
-
-    if(!r.ok) return [center.name];
-
-    const data=await r.json();
-    const seen=new Set([center.name.toLowerCase()]);
-    const list=[{name:center.name,dist:0}];
-
-    for(const el of data.elements||[]){
-      const name=el.tags && el.tags.name;
-      if(!name || seen.has(name.toLowerCase())) continue;
-      const dist=haversine(center,{lat:el.lat,lon:el.lon});
-      if(dist<=radiusKm){
-        seen.add(name.toLowerCase());
-        list.push({name,dist});
-      }
-    }
-
-    return list.sort((a,b)=>a.dist-b.dist).slice(0,10).map(x=>x.name);
-  }catch{
-    return [center.name];
+  }
+  return out;
+}
+function parseRecklinghausen(html,src){
+  const out=[];
+  const rows=html.match(/<tr\b[\s\S]*?<\/tr>/gi)||[];
+  for(const row of rows){
+    const cells=[...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(m=>stripTags(m[1]));
+    if(cells.length<2) continue;
+    const date=extractDateFromText(cells[1]);
+    const title=cells[0];
+    if(!date || !title || /veranstaltung/i.test(title) && /beginn/i.test(cells[1])) continue;
+    out.push({
+      title,eventDate:date,matchedPlace:"Recklinghausen",
+      source:src.source,url:src.url,category:classify(title),sourceType:"Kalender"
+    });
+  }
+  return out;
+}
+async function loadCalendar(src){
+  try{
+    const html=await fetchText(src.url);
+    const events=src.parser==="recklinghausen" ? parseRecklinghausen(html,src) : parseGenericCalendar(html,src);
+    return events.slice(0,160);
+  }catch(e){
+    console.log("Kalender konnte nicht geladen werden:",src.city,e.message);
+    return [];
   }
 }
 
+// Nachrichten bleiben nur Zusatzquelle
+function parseRss(xml){
+  const items=xml.match(/<item\b[\s\S]*?<\/item>/gi)||[];
+  const tag=(b,n)=>{const m=b.match(new RegExp(`<${n}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${n}>`,"i"));return m?stripTags(m[1].replace(/<!\[CDATA\[|\]\]>/g,"")):""};
+  return items.map(b=>({title:tag(b,"title"),link:tag(b,"link"),description:tag(b,"description"),pubDate:tag(b,"pubDate"),source:tag(b,"source")}));
+}
 async function googleNews(query){
-  const url="https://news.google.com/rss/search?q="+encodeURIComponent(query)+
-    "&hl=de&gl=DE&ceid=DE:de";
-  const r=await fetch(url,{headers:{"User-Agent":"Lokale-Events-App/1.0"}});
-  if(!r.ok) return [];
-  return parseRss(await r.text());
+  try{
+    const url="https://news.google.com/rss/search?q="+encodeURIComponent(query)+"&hl=de&gl=DE&ceid=DE:de";
+    return parseRss(await fetchText(url));
+  }catch{return [];}
+}
+async function newsEvents(center,nearCities){
+  let all=[];
+  const names=[center.name,...nearCities].slice(0,6);
+  for(const group of QUERY_GROUPS){
+    const q=`(${names.map(n=>`"${n}"`).join(" OR ")}) (${group})`;
+    const items=await googleNews(q);
+    for(const item of items){
+      const txt=item.title+" "+item.description;
+      if(!EVENT_TERMS.some(x=>txt.toLowerCase().includes(x.toLowerCase()))) continue;
+      const eventDate=extractDateFromText(txt,new Date(item.pubDate||Date.now()).getFullYear());
+      if(!eventDate) continue;
+      all.push({
+        title:item.title,eventDate,
+        matchedPlace:names.find(n=>txt.toLowerCase().includes(n.toLowerCase()))||center.name,
+        source:item.source||"Lokale Nachricht",url:item.link,
+        category:classify(txt),sourceType:"Nachricht"
+      });
+    }
+  }
+  return all;
 }
 
-function relevant(item, places){
-  const t=(item.title+" "+item.description).toLowerCase();
-  const hasEvent=EVENT_TERMS.some(x=>t.includes(x.toLowerCase()));
-  const hasPlace=places.some(p=>t.includes(p.toLowerCase()));
-  return hasEvent && hasPlace;
-}
-
-app.get("/api/events", async (req,res)=>{
+app.get("/api/events",async(req,res)=>{
   try{
     const plz=String(req.query.plz||"").trim();
     const radius=Math.min(Math.max(Number(req.query.radius)||50,5),100);
     const page=Math.max(Number(req.query.page)||0,0);
     const category=String(req.query.category||"").trim();
     const period=String(req.query.period||"all").trim();
+    if(!/^\d{5}$/.test(plz)) return res.status(400).json({error:"Bitte eine gültige fünfstellige deutsche PLZ eingeben."});
 
-    if(!/^\d{5}$/.test(plz)){
-      return res.status(400).json({error:"Bitte eine fünfstellige deutsche PLZ eingeben."});
+    const cacheKey=`v7|${plz}|${radius}|${category}|${period}`;
+    const cached=cache.get(cacheKey);
+    if(cached && Date.now()-cached.time<10*60*1000) return res.json(cached.payload);
+
+    const center=await geocodePostcode(plz);
+    const activeSources=CALENDARS.filter(s=>haversine(center,s)<=radius+8);
+    const nearCities=activeSources.map(s=>s.city).filter((v,i,a)=>a.indexOf(v)===i);
+
+    const calendarGroups=await Promise.all(activeSources.map(loadCalendar));
+    let events=calendarGroups.flat();
+
+    // Ergänzende Nachrichten
+    const extra=await newsEvents(center,nearCities);
+    events.push(...extra);
+
+    // Zukunft + Zeitraum
+    const today=localISO(new Date());
+    events=events.filter(e=>e.eventDate && e.eventDate>=today);
+
+    const bounds=periodBounds(period);
+    if(period!=="all"){
+      events=events.filter(e=>e.eventDate>=bounds.from && (!bounds.to || e.eventDate<=bounds.to));
     }
 
-    const key=`${plz}|${radius}|${category}|${period}`;
-    let payload=cache.get(key);
-
-    if(!payload || Date.now()-payload.time>10*60*1000){
-      const center=await geocodePostcode(plz);
-      const places=await nearbyPlaces(center,radius);
-      const primaryPlaces=places.slice(0,8);
-      let all=[];
-
-      for(const group of QUERY_GROUPS){
-        const placePart=primaryPlaces.map(p=>`"${p}"`).join(" OR ");
-        const q=`(${placePart}) (${group})`;
-        const items=await googleNews(q);
-        all.push(...items);
-        await sleep(120);
-      }
-
-      const dedup=new Map();
-
-      for(const item of all){
-        if(!relevant(item,primaryPlaces)) continue;
-
-        const key2=normalizeTitle(item.title);
-        if(!key2 || dedup.has(key2)) continue;
-
-        const text=item.title+" "+item.description;
-        const cat=classify(text);
-        const eventDate=inferEventDate(text,item.pubDate);
-
-        dedup.set(key2,{
-          title:item.title,
-          url:item.link,
-          source:item.source || (item.title.includes(" - ")?item.title.split(" - ").pop():"Lokale Nachricht"),
-          published:item.pubDate || null,
-          eventDate,
-          dateConfidence:eventDate ? "recognized" : "source_check",
-          category:cat,
-          matchedPlace:primaryPlaces.find(p=>text.toLowerCase().includes(p.toLowerCase())) || center.name
-        });
-      }
-
-      let events=[...dedup.values()];
-
-      if(category){
-        events=events.filter(e=>e.category===category);
-      }
-
-      // Sehr alte Nachrichten sind als Quelle für aktuelle lokale Events unzuverlässig.
-      // Standardmäßig nur Meldungen aus den letzten 365 Tagen berücksichtigen.
-      const nowMs=Date.now();
-      events=events.filter(e=>{
-        if(!e.published) return true;
-        const pd=new Date(e.published);
-        if(isNaN(pd)) return true;
-        return (nowMs-pd.getTime()) <= 365*86400000;
-      });
-
-      // Zukunftslogik mit zwei Vertrauensstufen:
-      // 1) Erkannter Termin: nur ab heute anzeigen.
-      // 2) Kein erkannter Termin: nur sehr aktuelle Meldungen (max. 30 Tage alt)
-      //    anzeigen und im Frontend als "Termin in Quelle prüfen" kennzeichnen.
-      const todayStr=localISO(new Date());
-      events=events.filter(e=>{
-        if(e.eventDate){
-          return e.eventDate>=todayStr;
-        }
-
-        if(!e.published) return false;
-        const pd=new Date(e.published);
-        if(isNaN(pd)) return false;
-
-        const ageDays=(Date.now()-pd.getTime())/86400000;
-        return ageDays>=0 && ageDays<=30;
-      });
-
-      // Zeitfilter
-      if(period!=="all"){
-        const bounds=periodBounds(period);
-        events=events.filter(e =>
-          e.eventDate &&
-          (!bounds.from || e.eventDate>=bounds.from) &&
-          (!bounds.to || e.eventDate<=bounds.to)
-        );
-      }
-
-      events.sort((a,b)=>{
-        if(a.eventDate && b.eventDate) return a.eventDate.localeCompare(b.eventDate);
-        if(a.eventDate) return -1;
-        if(b.eventDate) return 1;
-        return new Date(b.published||0)-new Date(a.published||0);
-      });
-
-      payload={time:Date.now(),center,places:primaryPlaces,events};
-      cache.set(key,payload);
+    if(category){
+      events=events.filter(e=>e.category===category);
     }
 
-    const perPage=10;
-    const total=payload.events.length;
-    const totalPages=Math.max(Math.ceil(total/perPage),1);
-    const start=page*perPage;
+    // Dubletten: gleicher/ähnlicher Titel am selben Tag
+    const dedup=new Map();
+    for(const e of events){
+      const key=e.eventDate+"|"+normalizeTitle(e.title).slice(0,90);
+      const old=dedup.get(key);
+      // Kalenderquelle hat Vorrang vor Nachricht
+      if(!old || (old.sourceType!=="Kalender" && e.sourceType==="Kalender")) dedup.set(key,e);
+    }
+    events=[...dedup.values()].sort((a,b)=>a.eventDate.localeCompare(b.eventDate)||a.title.localeCompare(b.title,"de"));
 
-    res.json({
-      center:payload.center,
-      searchedPlaces:payload.places,
-      total,
-      page,
-      totalPages,
-      events:payload.events.slice(start,start+perPage),
-      note:"Erkannte vergangene Termine werden ausgeblendet. Hinweise ohne sicher erkennbares Veranstaltungsdatum erscheinen nur, wenn der Artikel höchstens 30 Tage alt ist; dort bitte den Termin in der Originalquelle prüfen."
-    });
-
+    const perPage=10,total=events.length,totalPages=Math.max(1,Math.ceil(total/perPage));
+    const safePage=Math.min(page,totalPages-1);
+    const payload={
+      center,
+      searchedPlaces:nearCities,
+      sources:activeSources.map(s=>s.source),
+      total,page:safePage,totalPages,
+      events:events.slice(safePage*perPage,safePage*perPage+perPage),
+      note:"Direkte Veranstaltungskalender haben Vorrang. Lokale Nachrichten werden nur ergänzend genutzt. Vergangene Termine werden ausgeblendet."
+    };
+    cache.set(cacheKey,{time:Date.now(),payload});
+    res.json(payload);
   }catch(e){
+    console.error(e);
     res.status(500).json({error:e.message||"Suche fehlgeschlagen."});
   }
 });
 
-app.listen(PORT,()=>console.log(`Lokale Events App läuft auf Port ${PORT}`));
+app.listen(PORT,()=>console.log(`Lokale Events App v7 läuft auf Port ${PORT}`));
