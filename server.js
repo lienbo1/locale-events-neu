@@ -333,6 +333,7 @@ app.get("/api/events", async (req,res)=>{
           source:item.source || (item.title.includes(" - ")?item.title.split(" - ").pop():"Lokale Nachricht"),
           published:item.pubDate || null,
           eventDate,
+          dateConfidence:eventDate ? "recognized" : "source_check",
           category:cat,
           matchedPlace:primaryPlaces.find(p=>text.toLowerCase().includes(p.toLowerCase())) || center.name
         });
@@ -354,9 +355,23 @@ app.get("/api/events", async (req,res)=>{
         return (nowMs-pd.getTime()) <= 365*86400000;
       });
 
-      // Nur Veranstaltungen mit erkanntem Termin ab heute anzeigen.
+      // Zukunftslogik mit zwei Vertrauensstufen:
+      // 1) Erkannter Termin: nur ab heute anzeigen.
+      // 2) Kein erkannter Termin: nur sehr aktuelle Meldungen (max. 30 Tage alt)
+      //    anzeigen und im Frontend als "Termin in Quelle prüfen" kennzeichnen.
       const todayStr=localISO(new Date());
-      events=events.filter(e=>e.eventDate && e.eventDate>=todayStr);
+      events=events.filter(e=>{
+        if(e.eventDate){
+          return e.eventDate>=todayStr;
+        }
+
+        if(!e.published) return false;
+        const pd=new Date(e.published);
+        if(isNaN(pd)) return false;
+
+        const ageDays=(Date.now()-pd.getTime())/86400000;
+        return ageDays>=0 && ageDays<=30;
+      });
 
       // Zeitfilter
       if(period!=="all"){
@@ -391,7 +406,7 @@ app.get("/api/events", async (req,res)=>{
       page,
       totalPages,
       events:payload.events.slice(start,start+perPage),
-      note:"Es werden nur zukünftige Veranstaltungen mit plausibel erkanntem Termin angezeigt. Jahreslose und relative Datumsangaben werden vom Veröffentlichungsdatum des Artikels aus berechnet; sehr alte Meldungen werden verworfen."
+      note:"Erkannte vergangene Termine werden ausgeblendet. Hinweise ohne sicher erkennbares Veranstaltungsdatum erscheinen nur, wenn der Artikel höchstens 30 Tage alt ist; dort bitte den Termin in der Originalquelle prüfen."
     });
 
   }catch(e){
