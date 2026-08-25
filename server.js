@@ -5,7 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const cache = new Map();
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));
 
 const EVENT_TERMS = [
   "Flohmarkt", "Trödelmarkt", "Stadtfest", "Kirmes", "Schützenfest",
