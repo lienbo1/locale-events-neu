@@ -1,0 +1,23 @@
+{
+  "name": "Lokale Veranstaltungen",
+  "short_name": "Lokale Events",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fa",
+  "theme_color": "#185f91",
+  "description": "Lokale Märkte, Feste, Flohmärkte und öffentliche Veranstaltungen nach PLZ.",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
