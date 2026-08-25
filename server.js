@@ -82,8 +82,8 @@ const MONTHS = {
 
 function inferEventDate(text, published){
   const now = new Date();
-  const base = published ? new Date(published) : new Date();
-  const ref = (!isNaN(base) ? base : now);
+  const pubRaw = published ? new Date(published) : null;
+  const pub = (pubRaw && !isNaN(pubRaw)) ? pubRaw : null;
   const clean = String(text||"").replace(/\s+/g," ").trim();
   const lower = clean.toLowerCase();
 
@@ -91,77 +91,103 @@ function inferEventDate(text, published){
     return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
   }
 
-  function sensibleYear(month, day, explicitYear=null){
-    if(explicitYear) return +explicitYear;
-    let y = now.getFullYear();
-    const candidate = new Date(y, month-1, day);
-    // Liegt das Datum deutlich in der Vergangenheit, ist meist das Folgejahr gemeint.
-    if(candidate < new Date(now.getTime()-45*86400000)) y++;
-    return y;
+  function dayOnly(d){
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
   }
 
-  // 25.08.2026 / 25.8.2026
+  function chooseYearFromPublication(month, day){
+    // Ohne Veröffentlichungsdatum keine sichere Jahresableitung.
+    if(!pub) return null;
+
+    const baseYear = pub.getFullYear();
+    const pubDay = dayOnly(pub);
+    let candidate = new Date(baseYear, month-1, day);
+
+    // Wenn das genannte Datum bereits deutlich vor der Veröffentlichung lag,
+    // ist wahrscheinlich das Folgejahr gemeint.
+    if(candidate < new Date(pubDay.getTime() - 14*86400000)){
+      candidate = new Date(baseYear+1, month-1, day);
+    }
+
+    // Jahreslose lokale Veranstaltungshinweise müssen zeitlich plausibel
+    // zur Veröffentlichung sein. Mehr als 9 Monate Abstand -> verwerfen.
+    const diffDays = (candidate - pubDay) / 86400000;
+    if(diffDays < -14 || diffDays > 275) return null;
+
+    return candidate.getFullYear();
+  }
+
+  // Vollständiges Datum mit ausdrücklichem Jahr
   let m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.(20\d{2})\b/);
   if(m) return iso(+m[3], +m[2], +m[1]);
 
-  // 25.08. / 25.8.
-  m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.\b/);
-  if(m){
-    const day=+m[1], month=+m[2];
-    return iso(sensibleYear(month,day),month,day);
-  }
-
-  // 25. August 2026 / 25 August
-  m = lower.match(/\b([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
-  if(m){
-    const month=MONTHS[m[2]], day=+m[1];
-    return iso(sensibleYear(month,day,m[3]||null),month,day);
-  }
-
-  // 29. bis 31. August 2026 / 29.-31. August
+  // Datumsbereich mit Monatsname und optionalem Jahr:
+  // "29. bis 31. August 2026", "29.-31. August"
   m = lower.match(/\b([0-3]?\d)\.?\s*(?:-|–|bis)\s*([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
   if(m){
     const month=MONTHS[m[3]], day=+m[1];
-    return iso(sensibleYear(month,day,m[4]||null),month,day);
+    const year=m[4] ? +m[4] : chooseYearFromPublication(month,day);
+    return year ? iso(year,month,day) : null;
   }
 
-  // Relative Angaben
-  const today = new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  // Tag + Monatsname
+  m = lower.match(/\b([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
+  if(m){
+    const month=MONTHS[m[2]], day=+m[1];
+    const year=m[3] ? +m[3] : chooseYearFromPublication(month,day);
+    return year ? iso(year,month,day) : null;
+  }
 
-  if(/\bheute\b/.test(lower)) return localISO(today);
+  // Numerisches Datum ohne Jahr: "29.08."
+  m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.\b/);
+  if(m){
+    const day=+m[1], month=+m[2];
+    const year=chooseYearFromPublication(month,day);
+    return year ? iso(year,month,day) : null;
+  }
+
+  // Relative Angaben nur relativ zum Veröffentlichungsdatum interpretieren.
+  // Ohne Veröffentlichungsdatum sind sie zu unsicher.
+  if(!pub) return null;
+
+  const base = dayOnly(pub);
+
+  if(/\bheute\b/.test(lower)){
+    return localISO(base);
+  }
 
   if(/\bübermorgen\b|\buebermorgen\b/.test(lower)){
-    const d=new Date(today); d.setDate(d.getDate()+2); return localISO(d);
+    const d=new Date(base); d.setDate(d.getDate()+2); return localISO(d);
   }
 
   if(/\bmorgen\b/.test(lower)){
-    const d=new Date(today); d.setDate(d.getDate()+1); return localISO(d);
+    const d=new Date(base); d.setDate(d.getDate()+1); return localISO(d);
   }
 
-  // "dieses Wochenende" / "am Wochenende" -> Samstag
   if(/\b(dieses|kommendes|am)\s+wochenende\b/.test(lower)){
-    const day=today.getDay();
+    const day=base.getDay();
     const add=(6-day+7)%7;
-    const d=new Date(today); d.setDate(d.getDate()+add);
+    const d=new Date(base); d.setDate(d.getDate()+add);
     return localISO(d);
   }
 
-  // Wochentage: nur bei relativ frischen Artikeln verwenden.
-  const ageDays = Math.abs((now-ref)/86400000);
-  if(ageDays <= 21){
-    const weekdays = {
-      sonntag:0, montag:1, dienstag:2, mittwoch:3,
-      donnerstag:4, freitag:5, samstag:6
-    };
-    for(const [name,target] of Object.entries(weekdays)){
-      const re = new RegExp(`\\b(?:am|diesen|kommenden|nächsten|naechsten)?\\s*${name}\\b`, "i");
-      if(re.test(lower)){
-        const d=new Date(today);
-        let add=(target-d.getDay()+7)%7;
-        if(add===0 && !new RegExp(`\\b(?:heute|diesen)\\s+${name}\\b`,"i").test(lower)) add=7;
-        d.setDate(d.getDate()+add);
-        return localISO(d);
+  const weekdays = {
+    sonntag:0, montag:1, dienstag:2, mittwoch:3,
+    donnerstag:4, freitag:5, samstag:6
+  };
+
+  for(const [name,target] of Object.entries(weekdays)){
+    const re = new RegExp(`\\b(?:am|diesen|kommenden|nächsten|naechsten)?\\s*${name}\\b`, "i");
+    if(re.test(lower)){
+      const d=new Date(base);
+      let add=(target-d.getDay()+7)%7;
+      // "am Samstag" in einem Samstagsartikel kann heute bedeuten;
+      // "kommenden/nächsten Samstag" bedeutet dagegen die Folgewoche.
+      if(add===0 && new RegExp(`\\b(?:kommenden|nächsten|naechsten)\\s+${name}\\b`,"i").test(lower)){
+        add=7;
       }
+      d.setDate(d.getDate()+add);
+      return localISO(d);
     }
   }
 
@@ -318,7 +344,17 @@ app.get("/api/events", async (req,res)=>{
         events=events.filter(e=>e.category===category);
       }
 
-      // Vergangenheit konsequent ausblenden, sobald ein Termin erkannt wurde
+      // Sehr alte Nachrichten sind als Quelle für aktuelle lokale Events unzuverlässig.
+      // Standardmäßig nur Meldungen aus den letzten 365 Tagen berücksichtigen.
+      const nowMs=Date.now();
+      events=events.filter(e=>{
+        if(!e.published) return true;
+        const pd=new Date(e.published);
+        if(isNaN(pd)) return true;
+        return (nowMs-pd.getTime()) <= 365*86400000;
+      });
+
+      // Nur Veranstaltungen mit erkanntem Termin ab heute anzeigen.
       const todayStr=localISO(new Date());
       events=events.filter(e=>e.eventDate && e.eventDate>=todayStr);
 
@@ -355,7 +391,7 @@ app.get("/api/events", async (req,res)=>{
       page,
       totalPages,
       events:payload.events.slice(start,start+perPage),
-      note:"Es werden nur zukünftige Veranstaltungen mit erkanntem Termin angezeigt. Die Datumserkennung berücksichtigt jetzt auch Datumsbereiche, heute/morgen, Wochenende und Wochentage."
+      note:"Es werden nur zukünftige Veranstaltungen mit plausibel erkanntem Termin angezeigt. Jahreslose und relative Datumsangaben werden vom Veröffentlichungsdatum des Artikels aus berechnet; sehr alte Meldungen werden verworfen."
     });
 
   }catch(e){
