@@ -5,7 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const cache = new Map();
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));
 
 const EVENT_TERMS = [
   "Flohmarkt", "Trödelmarkt", "Stadtfest", "Kirmes", "Schützenfest",
@@ -82,33 +82,91 @@ const MONTHS = {
 
 function inferEventDate(text, published){
   const now = new Date();
-  let year = now.getFullYear();
-  const pub = published ? new Date(published) : null;
-  if(pub && !isNaN(pub)) year = pub.getFullYear();
+  const base = published ? new Date(published) : new Date();
+  const ref = (!isNaN(base) ? base : now);
+  const clean = String(text||"").replace(/\s+/g," ").trim();
+  const lower = clean.toLowerCase();
 
-  let m = text.match(/\b([0-3]?\d)\.([01]?\d)\.(20\d{2})\b/);
-  if(m) return `${m[3]}-${String(+m[2]).padStart(2,"0")}-${String(+m[1]).padStart(2,"0")}`;
-
-  m = text.match(/\b([0-3]?\d)\.([01]?\d)\.\b/);
-  if(m){
-    let y = year;
-    const candidate = new Date(y, +m[2]-1, +m[1]);
-    if(candidate < new Date(now.getTime()-60*86400000)) y++;
-    return `${y}-${String(+m[2]).padStart(2,"0")}-${String(+m[1]).padStart(2,"0")}`;
+  function iso(y,m,d){
+    return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
   }
 
-  m = text.toLowerCase().match(/\b([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
+  function sensibleYear(month, day, explicitYear=null){
+    if(explicitYear) return +explicitYear;
+    let y = now.getFullYear();
+    const candidate = new Date(y, month-1, day);
+    // Liegt das Datum deutlich in der Vergangenheit, ist meist das Folgejahr gemeint.
+    if(candidate < new Date(now.getTime()-45*86400000)) y++;
+    return y;
+  }
+
+  // 25.08.2026 / 25.8.2026
+  let m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.(20\d{2})\b/);
+  if(m) return iso(+m[3], +m[2], +m[1]);
+
+  // 25.08. / 25.8.
+  m = clean.match(/\b([0-3]?\d)\.([01]?\d)\.\b/);
   if(m){
-    let y = m[3] ? +m[3] : year;
-    const mo = MONTHS[m[2]];
-    const candidate = new Date(y, mo-1, +m[1]);
-    if(!m[3] && candidate < new Date(now.getTime()-60*86400000)) y++;
-    return `${y}-${String(mo).padStart(2,"0")}-${String(+m[1]).padStart(2,"0")}`;
+    const day=+m[1], month=+m[2];
+    return iso(sensibleYear(month,day),month,day);
+  }
+
+  // 25. August 2026 / 25 August
+  m = lower.match(/\b([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
+  if(m){
+    const month=MONTHS[m[2]], day=+m[1];
+    return iso(sensibleYear(month,day,m[3]||null),month,day);
+  }
+
+  // 29. bis 31. August 2026 / 29.-31. August
+  m = lower.match(/\b([0-3]?\d)\.?\s*(?:-|–|bis)\s*([0-3]?\d)\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(20\d{2})?/);
+  if(m){
+    const month=MONTHS[m[3]], day=+m[1];
+    return iso(sensibleYear(month,day,m[4]||null),month,day);
+  }
+
+  // Relative Angaben
+  const today = new Date(now.getFullYear(),now.getMonth(),now.getDate());
+
+  if(/\bheute\b/.test(lower)) return localISO(today);
+
+  if(/\bübermorgen\b|\buebermorgen\b/.test(lower)){
+    const d=new Date(today); d.setDate(d.getDate()+2); return localISO(d);
+  }
+
+  if(/\bmorgen\b/.test(lower)){
+    const d=new Date(today); d.setDate(d.getDate()+1); return localISO(d);
+  }
+
+  // "dieses Wochenende" / "am Wochenende" -> Samstag
+  if(/\b(dieses|kommendes|am)\s+wochenende\b/.test(lower)){
+    const day=today.getDay();
+    const add=(6-day+7)%7;
+    const d=new Date(today); d.setDate(d.getDate()+add);
+    return localISO(d);
+  }
+
+  // Wochentage: nur bei relativ frischen Artikeln verwenden.
+  const ageDays = Math.abs((now-ref)/86400000);
+  if(ageDays <= 21){
+    const weekdays = {
+      sonntag:0, montag:1, dienstag:2, mittwoch:3,
+      donnerstag:4, freitag:5, samstag:6
+    };
+    for(const [name,target] of Object.entries(weekdays)){
+      const re = new RegExp(`\\b(?:am|diesen|kommenden|nächsten|naechsten)?\\s*${name}\\b`, "i");
+      if(re.test(lower)){
+        const d=new Date(today);
+        let add=(target-d.getDay()+7)%7;
+        if(add===0 && !new RegExp(`\\b(?:heute|diesen)\\s+${name}\\b`,"i").test(lower)) add=7;
+        d.setDate(d.getDate()+add);
+        return localISO(d);
+      }
+    }
   }
 
   return null;
 }
-
 function localISO(d){
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
 }
@@ -297,7 +355,7 @@ app.get("/api/events", async (req,res)=>{
       page,
       totalPages,
       events:payload.events.slice(start,start+perPage),
-      note:"Es werden nur Veranstaltungshinweise mit eindeutig erkanntem Termin ab heute angezeigt. Vergangene oder undatierte Hinweise werden ausgeblendet."
+      note:"Es werden nur zukünftige Veranstaltungen mit erkanntem Termin angezeigt. Die Datumserkennung berücksichtigt jetzt auch Datumsbereiche, heute/morgen, Wochenende und Wochentage."
     });
 
   }catch(e){
