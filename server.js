@@ -5,7 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const cache = new Map();
 
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, "public")));
 
 const EVENT_TERMS = [
   "Flohmarkt", "Trödelmarkt", "Stadtfest", "Kirmes", "Schützenfest",
@@ -262,7 +262,7 @@ app.get("/api/events", async (req,res)=>{
 
       // Vergangenheit konsequent ausblenden, sobald ein Termin erkannt wurde
       const todayStr=localISO(new Date());
-      events=events.filter(e=>!e.eventDate || e.eventDate>=todayStr);
+      events=events.filter(e=>e.eventDate && e.eventDate>=todayStr);
 
       // Zeitfilter
       if(period!=="all"){
@@ -297,7 +297,7 @@ app.get("/api/events", async (req,res)=>{
       page,
       totalPages,
       events:payload.events.slice(start,start+perPage),
-      note:"Vergangene erkannte Termine werden ausgeblendet. Hinweise ohne eindeutig erkennbares Veranstaltungsdatum können weiterhin erscheinen; maßgeblich ist die Originalquelle."
+      note:"Es werden nur Veranstaltungshinweise mit eindeutig erkanntem Termin ab heute angezeigt. Vergangene oder undatierte Hinweise werden ausgeblendet."
     });
 
   }catch(e){
