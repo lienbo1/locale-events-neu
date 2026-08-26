@@ -296,7 +296,7 @@ app.get("/api/events",async(req,res)=>{
     const period=String(req.query.period||"all").trim();
     if(!/^\d{5}$/.test(plz)) return res.status(400).json({error:"Bitte eine gültige fünfstellige deutsche PLZ eingeben."});
 
-    const cacheKey=`v7|${plz}|${radius}|${category}|${period}`;
+    const cacheKey=`v8|${plz}|${radius}|${category}|${period}|page:${page}`;
     const cached=cache.get(cacheKey);
     if(cached && Date.now()-cached.time<10*60*1000) return res.json(cached.payload);
 
@@ -334,24 +334,14 @@ app.get("/api/events",async(req,res)=>{
     }
     events=[...dedup.values()].sort((a,b)=>a.eventDate.localeCompare(b.eventDate)||a.title.localeCompare(b.title,"de"));
 
-    const perPage=10;
-    const total=events.length;
-    const totalPages=Math.max(1,Math.ceil(total/perPage));
-    const safePage=Math.max(0,Math.min(page,totalPages-1));
-    const start=safePage*perPage;
-    const pageEvents=events.slice(start,start+perPage);
-
+    const perPage=10,total=events.length,totalPages=Math.max(1,Math.ceil(total/perPage));
+    const safePage=Math.min(page,totalPages-1);
     const payload={
       center,
       searchedPlaces:nearCities,
       sources:activeSources.map(s=>s.source),
-      total,
-      page:safePage,
-      perPage,
-      totalPages,
-      hasPrev:safePage>0,
-      hasNext:safePage+1<totalPages,
-      events:pageEvents,
+      total,page:safePage,totalPages,
+      events:events.slice(safePage*perPage,safePage*perPage+perPage),
       note:"Direkte Veranstaltungskalender haben Vorrang. Lokale Nachrichten werden nur ergänzend genutzt. Vergangene Termine werden ausgeblendet."
     };
     cache.set(cacheKey,{time:Date.now(),payload});
@@ -362,4 +352,4 @@ app.get("/api/events",async(req,res)=>{
   }
 });
 
-app.listen(PORT,()=>console.log(`Lokale Events App v7 läuft auf Port ${PORT}`));
+app.listen(PORT,()=>console.log(`Lokale Events App v8 läuft auf Port ${PORT}`));
