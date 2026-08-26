@@ -128,7 +128,7 @@ Es werden nur zukünftige erkannte Termine angezeigt. Pro Seite erscheinen 10 Tr
 
 <script>
 const $=id=>document.getElementById(id);
-let page=0,totalPages=1,last={},period="all";
+let page=0,totalPages=1,last={},period="all",hasNext=false,hasPrev=false;
 
 document.querySelectorAll("#periods button").forEach(btn=>{
   btn.addEventListener("click",()=>{
@@ -196,15 +196,18 @@ async function load(useLast=false){
       throw new Error(data.error||"Suche fehlgeschlagen.");
     }
 
-    totalPages=data.totalPages||1;
+    page=Number(data.page||0);
+    totalPages=Number(data.totalPages||1);
+    hasPrev=typeof data.hasPrev==="boolean" ? data.hasPrev : page>0;
+    hasNext=typeof data.hasNext==="boolean" ? data.hasNext : page+1<totalPages;
 
     $("results").classList.remove("hidden");
     $("headline").textContent="Events rund um "+data.center.name;
     $("count").textContent=data.total+" gefundene Hinweise";
     $("places").textContent="Einbezogene Orte: "+(data.searchedPlaces||[]).join(", ");
-    $("page").textContent="Seite "+(data.page+1)+" von "+totalPages;
-    $("prev").disabled=page<=0;
-    $("next").disabled=page+1>=totalPages;
+    $("page").textContent="Seite "+(page+1)+" von "+totalPages;
+    $("prev").disabled=!hasPrev;
+    $("next").disabled=!hasNext;
     $("note").textContent=data.note||"";
 
     $("list").innerHTML=data.events.length
@@ -232,17 +235,15 @@ async function load(useLast=false){
 $("search").addEventListener("click",()=>load(false));
 
 $("prev").addEventListener("click",()=>{
-  if(page>0){
-    page--;
-    load(true);
-  }
+  if(!hasPrev) return;
+  page=Math.max(0,page-1);
+  load(true);
 });
 
 $("next").addEventListener("click",()=>{
-  if(page+1<totalPages){
-    page++;
-    load(true);
-  }
+  if(!hasNext) return;
+  page=page+1;
+  load(true);
 });
 
 if("serviceWorker" in navigator){
