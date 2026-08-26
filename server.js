@@ -334,14 +334,24 @@ app.get("/api/events",async(req,res)=>{
     }
     events=[...dedup.values()].sort((a,b)=>a.eventDate.localeCompare(b.eventDate)||a.title.localeCompare(b.title,"de"));
 
-    const perPage=10,total=events.length,totalPages=Math.max(1,Math.ceil(total/perPage));
-    const safePage=Math.min(page,totalPages-1);
+    const perPage=10;
+    const total=events.length;
+    const totalPages=Math.max(1,Math.ceil(total/perPage));
+    const safePage=Math.max(0,Math.min(page,totalPages-1));
+    const start=safePage*perPage;
+    const pageEvents=events.slice(start,start+perPage);
+
     const payload={
       center,
       searchedPlaces:nearCities,
       sources:activeSources.map(s=>s.source),
-      total,page:safePage,totalPages,
-      events:events.slice(safePage*perPage,safePage*perPage+perPage),
+      total,
+      page:safePage,
+      perPage,
+      totalPages,
+      hasPrev:safePage>0,
+      hasNext:safePage+1<totalPages,
+      events:pageEvents,
       note:"Direkte Veranstaltungskalender haben Vorrang. Lokale Nachrichten werden nur ergänzend genutzt. Vergangene Termine werden ausgeblendet."
     };
     cache.set(cacheKey,{time:Date.now(),payload});
